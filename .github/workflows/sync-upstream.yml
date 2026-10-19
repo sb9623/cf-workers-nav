@@ -1,0 +1,51 @@
+# 每天北京时间 03:00 自动合并上游 lineagett/cf-workers-nav 的更新，
+# 有更新则自动部署到 Cloudflare；也支持手动触发（手动触发一定会部署一次，用于验证链路）。
+name: Sync upstream and deploy
+
+on:
+  schedule:
+    - cron: '0 19 * * *'  # 03:00 Asia/Shanghai
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Merge upstream
+        id: merge
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/lineagett/cf-workers-nav.git || true
+          git fetch upstream lineagett
+          BEFORE=$(git rev-parse HEAD)
+          if git merge --no-edit upstream/lineagett; then
+            AFTER=$(git rev-parse HEAD)
+            if [ "$BEFORE" != "$AFTER" ]; then
+              git push origin HEAD
+              echo "changed=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "changed=false" >> "$GITHUB_OUTPUT"
+            fi
+          else
+            git merge --abort || true
+            echo "::error::上游合并冲突，需要手动解决（到 Actions 日志查看冲突文件）"
+            exit 1
+          fi
+
+      - name: Deploy to Cloudflare
+        # 注意：GITHUB_TOKEN 的 push 不会触发 deploy.yml，所以合并带来的部署在这里直接做
+        if: steps.merge.outputs.changed == 'true' || github.event_name == 'workflow_dispatch'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: deploy
